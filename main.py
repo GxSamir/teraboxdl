@@ -12,8 +12,19 @@ import argparse
 import json
 from terabox_client import TeraBoxDLClient
 
-# Default working tdl_pass extracted from network session
-DEFAULT_TDL_PASS = "1793069477.1793076677.cb3cd45025054afe.a0001d2f83b6e0b7f5079cd399b22c9d18b37d7619f5ccdcb53ab9802f16606b"
+DEFAULT_TDL_PASS = "1793079162.1793090308.cb3cd45025054afe.2445650a2f6ed29f24dade96b0526db9d75c4b0012a69a1e5b7d16d3f9c3235d"
+COOKIE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "latest_cookie.txt")
+
+def get_default_cookie() -> str:
+    if os.path.exists(COOKIE_FILE):
+        try:
+            with open(COOKIE_FILE, "r", encoding="utf-8") as f:
+                c = f.read().strip()
+                if c:
+                    return c
+        except Exception:
+            pass
+    return os.getenv("TDL_PASS", DEFAULT_TDL_PASS)
 
 
 def parse_args():
@@ -32,14 +43,15 @@ def parse_args():
     parser.add_argument("--output", "-o", default=".", help="Destination path or folder to save downloaded file")
     parser.add_argument("--json", "-j", action="store_true", help="Output raw JSON data")
     parser.add_argument("--stream", "-s", action="store_true", help="Display video stream URL (m3u8)")
-    parser.add_argument("--cookie", "-c", default=DEFAULT_TDL_PASS, help="Custom tdl_pass cookie value")
+    parser.add_argument("--cookie", "-c", default=None, help="Custom tdl_pass cookie value")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
 
-    client = TeraBoxDLClient(tdl_pass=args.cookie)
+    active_cookie = args.cookie or get_default_cookie()
+    client = TeraBoxDLClient(tdl_pass=active_cookie)
 
     if not args.json:
         print(f"\n[+] Resolving link: {args.url}")

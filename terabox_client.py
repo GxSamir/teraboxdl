@@ -82,6 +82,8 @@ class TeraBoxDLClient:
         "Chrome/124.0.0.0 Safari/537.36"
     )
 
+    DEFAULT_TDL_PASS = "1793079162.1793090308.cb3cd45025054afe.2445650a2f6ed29f24dade96b0526db9d75c4b0012a69a1e5b7d16d3f9c3235d"
+
     def __init__(
         self,
         tdl_pass: Optional[str] = None,
@@ -98,15 +100,14 @@ class TeraBoxDLClient:
         """
         self.api_url = api_url or self.DEFAULT_API_URL
         self.user_agent = user_agent or self.DEFAULT_USER_AGENT
-        self.tdl_pass = tdl_pass or os.getenv("TDL_PASS", "")
+        self.tdl_pass = tdl_pass or os.getenv("TDL_PASS", "") or self.DEFAULT_TDL_PASS
         self.cf_clearance = cf_clearance or os.getenv("CF_CLEARANCE", "")
 
     def _build_cookie_header(self) -> str:
         cookies = []
         if self.tdl_pass:
             cookies.append(f"tdl_pass={self.tdl_pass}")
-            # Optional expiration cookie matching timestamp
-            cookies.append("tdl_pass_exp=1793076677")
+            cookies.append("tdl_pass_exp=1793090308")
         if self.cf_clearance:
             cookies.append(f"cf_clearance={self.cf_clearance}")
         return "; ".join(cookies)

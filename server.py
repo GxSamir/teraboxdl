@@ -17,18 +17,27 @@ import time
 import json
 import random
 import argparse
+import datetime
+import threading
 import urllib.request
 import urllib.parse
 import urllib.error
 from typing import Tuple, Dict, Any, Optional
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
-# Default working session token
-DEFAULT_TDL_PASS: str = os.getenv(
-    "TDL_PASS",
-    "1793069477.1793076677.cb3cd45025054afe.a0001d2f83b6e0b7f5079cd399b22c9d18b37d7619f5ccdcb53ab9802f16606b"
-)
+# Fresh fallback session token
+DEFAULT_TDL_PASS: str = "1793079162.1793090308.cb3cd45025054afe.2445650a2f6ed29f24dade96b0526db9d75c4b0012a69a1e5b7d16d3f9c3235d"
 UPSTREAM_API: str = "https://teraboxdl.site/api/proxy"
+COOKIE_FILE: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "latest_cookie.txt")
+
+# Coolify auto-sync URL (updates remote VPS server whenever local token updates)
+DEFAULT_COOLIFY_SYNC_URL: str = os.getenv(
+    "COOLIFY_SYNC_URL",
+    "http://4gqy7obbm2xc5z1067zjb0y2.201.18.200.27.sslip.io"
+)
+
+# Active dynamic in-memory token
+ACTIVE_TDL_PASS: str = ""
 
 # Rotating User-Agents to mimic real varied browser traffic
 USER_AGENTS = [
@@ -40,9 +49,128 @@ USER_AGENTS = [
 ]
 
 
+def parse_token_expiry(token: str) -> Optional[int]:
+    """Extracts expiration timestamp embedded inside tdl_pass token."""
+    try:
+        parts = token.split(".")
+        if len(parts) >= 2:
+            return int(parts[1])
+    except Exception:
+        pass
+    return None
+
+
+def get_token_metadata(token: str) -> Dict[str, Any]:
+    """Calculates seconds remaining and expiration details for a given token."""
+    exp_ts = parse_token_expiry(token)
+    now_ts = int(time.time())
+    if exp_ts:
+        seconds_left = exp_ts - now_ts
+        is_expired = seconds_left <= 0
+        exp_iso = datetime.datetime.fromtimestamp(exp_ts).isoformat()
+    else:
+        seconds_left = None
+        is_expired = False
+        exp_iso = "unknown"
+
+    return {
+        "token_preview": (token[:28] + "..." + token[-12:]) if len(token) > 40 else token,
+        "expires_at_timestamp": exp_ts,
+        "expires_at": exp_iso,
+        "seconds_remaining": seconds_left,
+        "is_expired": is_expired,
+    }
+
+
+def get_current_token() -> str:
+    """
+    Resolves active token using hierarchy:
+    1. Active in-memory token
+    2. latest_cookie.txt file
+    3. TDL_PASS environment variable
+    4. DEFAULT_TDL_PASS fallback
+    """
+    global ACTIVE_TDL_PASS
+    if ACTIVE_TDL_PASS and ACTIVE_TDL_PASS.strip():
+        return ACTIVE_TDL_PASS.strip()
+
+    if os.path.exists(COOKIE_FILE):
+        try:
+            with open(COOKIE_FILE, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                if content:
+                    ACTIVE_TDL_PASS = content
+                    return ACTIVE_TDL_PASS
+        except Exception:
+            pass
+
+    env_token = os.getenv("TDL_PASS", "").strip()
+    if env_token:
+        ACTIVE_TDL_PASS = env_token
+        return ACTIVE_TDL_PASS
+
+    ACTIVE_TDL_PASS = DEFAULT_TDL_PASS
+    return ACTIVE_TDL_PASS
+
+
+def set_active_token(new_token: str, save_file: bool = True, sync_remote: bool = True) -> Dict[str, Any]:
+    """Updates active token in memory, writes to disk, and syncs remote server."""
+    global ACTIVE_TDL_PASS
+    clean_token = new_token.strip()
+    ACTIVE_TDL_PASS = clean_token
+
+    if save_file:
+        try:
+            with open(COOKIE_FILE, "w", encoding="utf-8") as f:
+                f.write(clean_token)
+        except Exception as e:
+            sys.stderr.write(f"[!] Warning: Could not write {COOKIE_FILE}: {e}\n")
+
+    if sync_remote and DEFAULT_COOLIFY_SYNC_URL:
+        threading.Thread(target=_sync_to_coolify, args=(clean_token,), daemon=True).start()
+
+    return get_token_metadata(clean_token)
+
+
+def _sync_to_coolify(token: str) -> None:
+    """Syncs a fresh token to Coolify / remote server in background."""
+    coolify_base = DEFAULT_COOLIFY_SYNC_URL.rstrip("/")
+    if "localhost" in coolify_base or "127.0.0.1" in coolify_base:
+        return
+    sync_url = f"{coolify_base}/update-token?token={urllib.parse.quote(token)}"
+    try:
+        req = urllib.request.Request(sync_url, headers={"User-Agent": "TeraBoxDL-Sync/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            sys.stdout.write(f"[+] Synced fresh token to Coolify server ({resp.status})\n")
+            sys.stdout.flush()
+    except Exception as e:
+        sys.stderr.write(f"[!] Coolify sync note: {e}\n")
+
+
+def try_refresh_from_chrome_cdp() -> Optional[str]:
+    """
+    Connects to local Chrome browser via DevTools Protocol (port 9222)
+    and extracts fresh 'tdl_pass' cookie without opening new windows.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222", timeout=5000)
+            for ctx in browser.contexts:
+                for c in ctx.cookies():
+                    if c.get("name") == "tdl_pass" and c.get("value"):
+                        val = c["value"]
+                        set_active_token(val, save_file=True, sync_remote=True)
+                        sys.stdout.write(f"[+] Extracted fresh tdl_pass from Chrome CDP: {val[:30]}...\n")
+                        sys.stdout.flush()
+                        return val
+    except Exception:
+        pass
+    return None
+
+
 def generate_random_ip() -> str:
     """Generates a random public IP address to rotate origin headers."""
-    # Pre-selected realistic public IP blocks
     prefixes = [
         (104, random.randint(16, 31)),
         (198, 51),
@@ -62,12 +190,14 @@ def fetch_from_upstream(
     dir_path: str = "",
     page: int = 1,
     tdl_pass: Optional[str] = None,
-    proxy_url: Optional[str] = None
+    proxy_url: Optional[str] = None,
+    allow_retry: bool = True
 ) -> Tuple[int, Dict[str, Any]]:
     """
     Forwards request to upstream API with spoofed headers, rotating IPs, and dynamic cookies.
+    Automatically retries with Chrome CDP auto-refresh if CHALLENGE_REQUIRED is encountered.
     """
-    token = tdl_pass or DEFAULT_TDL_PASS
+    token = tdl_pass or get_current_token()
     cleaned_url = target_url.strip()
 
     payload: Dict[str, Any] = {"url": cleaned_url}
@@ -79,8 +209,6 @@ def fetch_from_upstream(
     data_bytes = json.dumps(payload).encode("utf-8")
     random_ip = generate_random_ip()
     chosen_ua = random.choice(USER_AGENTS)
-
-    # Dynamic cookie expiration (valid for 24 hours into the future)
     future_expiry = int(time.time() + 86400)
 
     headers = {
@@ -90,7 +218,6 @@ def fetch_from_upstream(
         "Referer": "https://teraboxdl.site/",
         "User-Agent": chosen_ua,
         "Cookie": f"tdl_pass={token}; tdl_pass_exp={future_expiry}",
-        # Spoof client IP headers to prevent rate-limiting on your real IP
         "X-Forwarded-For": random_ip,
         "X-Real-IP": random_ip,
         "Client-IP": random_ip,
@@ -98,13 +225,9 @@ def fetch_from_upstream(
 
     req = urllib.request.Request(UPSTREAM_API, data=data_bytes, headers=headers, method="POST")
 
-    # Optional proxy handler if configured
     opener = urllib.request.build_opener()
     if proxy_url:
-        proxy_handler = urllib.request.ProxyHandler({
-            "http": proxy_url,
-            "https": proxy_url
-        })
+        proxy_handler = urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
         opener = urllib.request.build_opener(proxy_handler)
 
     try:
@@ -117,6 +240,24 @@ def fetch_from_upstream(
             err_json = json.loads(err_body)
         except Exception:
             err_json = {"error": f"HTTP Error {e.code}", "detail": err_body}
+
+        # If Cloudflare challenge is required, attempt auto-refresh from Chrome CDP and retry
+        if allow_retry and (e.code == 403 or err_json.get("code") == "CHALLENGE_REQUIRED"):
+            sys.stdout.write("[!] Upstream requires Turnstile verification. Attempting auto-refresh...\n")
+            sys.stdout.flush()
+            new_token = try_refresh_from_chrome_cdp()
+            if new_token and new_token != token:
+                sys.stdout.write("[+] Retrying request with fresh token...\n")
+                sys.stdout.flush()
+                return fetch_from_upstream(
+                    target_url=target_url,
+                    dir_path=dir_path,
+                    page=page,
+                    tdl_pass=new_token,
+                    proxy_url=proxy_url,
+                    allow_retry=False
+                )
+
         return int(e.code), err_json
     except Exception as e:
         return 500, {"error": "Failed to connect to upstream API", "detail": str(e)}
@@ -135,7 +276,7 @@ class TeraBoxAPIHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(content)))
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-TDL-Pass")
             self.end_headers()
             self.wfile.write(content)
         except (BrokenPipeError, ConnectionResetError):
@@ -146,26 +287,63 @@ class TeraBoxAPIHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-TDL-Pass")
         self.send_header("Content-Length", "0")
         self.end_headers()
 
     def do_GET(self) -> None:
         """
         Handle GET requests:
-        e.g. /?url=<TERABOX_URL>
+        - /?url=<TERABOX_URL>
+        - /health
+        - /token-status
+        - /update-token?token=<NEW_TOKEN>
+        - /refresh-token
         """
         parsed = urllib.parse.urlparse(self.path)
         query_params = urllib.parse.parse_qs(parsed.query)
 
+        # Health check
         if parsed.path == "/health":
             self._send_json_response(200, {"status": "healthy", "service": "teraboxdl"})
+            return
+
+        # Token status
+        if parsed.path == "/token-status":
+            token = get_current_token()
+            meta = get_token_metadata(token)
+            meta["status"] = "online"
+            meta["storage_file"] = os.path.exists(COOKIE_FILE)
+            self._send_json_response(200, meta)
+            return
+
+        # Update token live via GET
+        if parsed.path == "/update-token":
+            new_token = query_params.get("token", [None])[0]
+            if not new_token:
+                self._send_json_response(400, {"error": "Missing 'token' query parameter"})
+                return
+            meta = set_active_token(new_token, save_file=True, sync_remote=False)
+            self._send_json_response(200, {"status": "updated", "token_info": meta})
+            return
+
+        # Force refresh via Chrome CDP
+        if parsed.path == "/refresh-token":
+            refreshed = try_refresh_from_chrome_cdp()
+            if refreshed:
+                meta = get_token_metadata(refreshed)
+                self._send_json_response(200, {"status": "refreshed_from_chrome", "token_info": meta})
+            else:
+                self._send_json_response(503, {
+                    "error": "Could not extract cookie from Chrome CDP",
+                    "hint": "Ensure Chrome is running with --remote-debugging-port=9222 and has visited teraboxdl.site"
+                })
             return
 
         target_url = query_params.get("url", [None])[0]
         dir_path = query_params.get("dir", [""])[0]
         page_val = query_params.get("page", ["1"])[0]
-        custom_cookie = query_params.get("cookie", [None])[0]
+        custom_cookie = query_params.get("cookie", [None])[0] or self.headers.get("X-TDL-Pass")
 
         try:
             page = int(page_val)
@@ -176,10 +354,11 @@ class TeraBoxAPIHandler(BaseHTTPRequestHandler):
             host_header = self.headers.get("Host", "localhost:8000")
             help_doc = {
                 "status": "online",
+                "service": "TeraBoxDL Scraper & Direct Link API",
                 "usage": "/?url=<TERABOX_URL>",
-                "health": "/health",
+                "token_status": f"http://{host_header}/token-status",
                 "example": f"http://{host_header}/?url=https://freeterabox.com/s/1ZtWhQTzbztneHLVWEbZ2uA",
-                "instructions": "Pass any valid TeraBox URL into the 'url' parameter to extract direct download links."
+                "token_expiry": get_token_metadata(get_current_token())
             }
             self._send_json_response(200, help_doc)
             return
@@ -197,35 +376,44 @@ class TeraBoxAPIHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         """
         Handle POST requests:
-        Accepts JSON body: {"url": "..."}
+        - / (JSON payload: {"url": "..."})
+        - /update-token (JSON payload: {"token": "..."})
         """
+        parsed = urllib.parse.urlparse(self.path)
         content_length = int(self.headers.get("Content-Length", 0))
         post_data = self.rfile.read(content_length)
 
-        target_url: Optional[str] = None
-        dir_path: str = ""
-        page: int = 1
-        custom_cookie: Optional[str] = None
-
+        data: Dict[str, Any] = {}
         if post_data:
             try:
                 data = json.loads(post_data.decode("utf-8"))
-                target_url = data.get("url")
-                dir_path = data.get("dir", "")
-                page = data.get("page", 1)
-                custom_cookie = data.get("cookie")
             except Exception:
-                parsed = urllib.parse.parse_qs(post_data.decode("utf-8"))
-                target_url = parsed.get("url", [None])[0]
+                parsed_form = urllib.parse.parse_qs(post_data.decode("utf-8"))
+                for k, v in parsed_form.items():
+                    data[k] = v[0] if v else ""
 
+        # Update token endpoint
+        if parsed.path == "/update-token":
+            new_token = data.get("token") or data.get("tdl_pass")
+            if not new_token:
+                self._send_json_response(400, {"error": "Missing 'token' in JSON body"})
+                return
+            meta = set_active_token(new_token, save_file=True, sync_remote=False)
+            self._send_json_response(200, {"status": "updated", "token_info": meta})
+            return
+
+        target_url = data.get("url")
         if not target_url:
-            parsed = urllib.parse.urlparse(self.path)
             query_params = urllib.parse.parse_qs(parsed.query)
             target_url = query_params.get("url", [None])[0]
 
         if not target_url:
             self._send_json_response(400, {"error": "Missing 'url' parameter in JSON body or query string"})
             return
+
+        dir_path = data.get("dir", "")
+        page = int(data.get("page", 1))
+        custom_cookie = data.get("cookie") or self.headers.get("X-TDL-Pass")
 
         status_code, response_json = fetch_from_upstream(
             target_url=target_url,
@@ -246,15 +434,22 @@ class TeraBoxAPIHandler(BaseHTTPRequestHandler):
 def run_server(port: int = 8000, host: str = "0.0.0.0", proxy: Optional[str] = None) -> None:
     TeraBoxAPIHandler.proxy_url = proxy or os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY")
 
+    # Load initial token
+    initial_token = get_current_token()
+    token_meta = get_token_metadata(initial_token)
+
     server_address = (host, port)
     httpd = ThreadingHTTPServer(server_address, TeraBoxAPIHandler)
 
     print("=" * 65)
     print(f"[*] TeraBoxDL Server running on http://{host}:{port}")
+    print(f"[*] Active Token: {token_meta['token_preview']}")
+    print(f"[*] Token Expiration: {token_meta['expires_at']} ({token_meta['seconds_remaining']}s remaining)")
     print(f"[*] IP Privacy: Enabled (Rotating Public IP Headers + User-Agents)")
     if TeraBoxAPIHandler.proxy_url:
         print(f"[*] Network Proxy: {TeraBoxAPIHandler.proxy_url}")
     print(f"[*] Health Check: http://{host}:{port}/health")
+    print(f"[*] Token Status: http://{host}:{port}/token-status")
     print(f"[*] Ready to accept requests!")
     print("=" * 65)
     sys.stdout.flush()

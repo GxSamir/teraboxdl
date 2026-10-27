@@ -8,7 +8,7 @@
  *   node terabox_client.js "https://freeterabox.com/s/1ZtWhQTzbztneHLVWEbZ2uA"
  */
 
-const DEFAULT_TDL_PASS = "1793069477.1793076677.cb3cd45025054afe.a0001d2f83b6e0b7f5079cd399b22c9d18b37d7619f5ccdcb53ab9802f16606b";
+const DEFAULT_TDL_PASS = "1793079162.1793090308.cb3cd45025054afe.2445650a2f6ed29f24dade96b0526db9d75c4b0012a69a1e5b7d16d3f9c3235d";
 
 class TeraBoxClient {
   constructor(options = {}) {
@@ -24,7 +24,7 @@ class TeraBoxClient {
     if (dir) payload.dir = dir;
     if (page > 1) payload.page = page;
 
-    const cookieHeader = `tdl_pass=${this.tdlPass}; tdl_pass_exp=1793076677`;
+    const cookieHeader = `tdl_pass=${this.tdlPass}; tdl_pass_exp=1793090308`;
 
     const response = await fetch(this.apiUrl, {
       method: "POST",
