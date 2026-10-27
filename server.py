@@ -218,9 +218,6 @@ def fetch_from_upstream(
         "Referer": "https://teraboxdl.site/",
         "User-Agent": chosen_ua,
         "Cookie": f"tdl_pass={token}; tdl_pass_exp={future_expiry}",
-        "X-Forwarded-For": random_ip,
-        "X-Real-IP": random_ip,
-        "Client-IP": random_ip,
     }
 
     req = urllib.request.Request(UPSTREAM_API, data=data_bytes, headers=headers, method="POST")
