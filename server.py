@@ -185,6 +185,60 @@ def generate_random_ip() -> str:
     return f"{p1}.{p2}.{p3}.{p4}"
 
 
+def fetch_via_curl(
+    target_url: str,
+    dir_path: str = "",
+    page: int = 1,
+    token: str = "",
+    token_exp: int = 0,
+    user_agent: str = "",
+    proxy_url: Optional[str] = None
+) -> Optional[Tuple[int, Dict[str, Any]]]:
+    """
+    Executes request using system curl (HTTP/2 + modern TLS ciphers)
+    to prevent Cloudflare bot detection on datacenter IPs.
+    """
+    try:
+        import subprocess
+        payload: Dict[str, Any] = {"url": target_url.strip()}
+        if dir_path:
+            payload["dir"] = dir_path
+        if page > 1:
+            payload["page"] = page
+
+        data_str = json.dumps(payload)
+        cookie_hdr = f"tdl_pass={token}; tdl_pass_exp={token_exp}"
+
+        cmd = [
+            "curl", "-s", "-w", "\n__HTTP_STATUS__:%{http_code}",
+            "-X", "POST", UPSTREAM_API,
+            "-H", "Content-Type: application/json",
+            "-H", "Accept: application/json, text/plain, */*",
+            "-H", "Origin: https://teraboxdl.site",
+            "-H", "Referer: https://teraboxdl.site/",
+            "-H", f"User-Agent: {user_agent}",
+            "-H", f"Cookie: {cookie_hdr}",
+            "-d", data_str
+        ]
+        if proxy_url:
+            cmd.extend(["--proxy", proxy_url])
+
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=35)
+        if proc.returncode == 0 and proc.stdout:
+            stdout_text = proc.stdout.strip()
+            if "__HTTP_STATUS__:" in stdout_text:
+                parts = stdout_text.rsplit("__HTTP_STATUS__:", 1)
+                body_str = parts[0].strip()
+                status = int(parts[1].strip())
+                try:
+                    return status, json.loads(body_str)
+                except Exception:
+                    return status, {"raw": body_str}
+    except Exception as e:
+        sys.stderr.write(f"[!] curl attempt note: {e}\n")
+    return None
+
+
 def fetch_from_upstream(
     target_url: str,
     dir_path: str = "",
@@ -194,12 +248,50 @@ def fetch_from_upstream(
     allow_retry: bool = True
 ) -> Tuple[int, Dict[str, Any]]:
     """
-    Forwards request to upstream API with spoofed headers, rotating IPs, and dynamic cookies.
+    Forwards request to upstream API with browser headers, rotating user-agents, and dynamic cookies.
+    Tries curl first for HTTP/2 TLS support, with urllib as standard fallback.
     Automatically retries with Chrome CDP auto-refresh if CHALLENGE_REQUIRED is encountered.
     """
     token = tdl_pass or get_current_token()
     cleaned_url = target_url.strip()
+    chosen_ua = random.choice(USER_AGENTS)
+    token_exp = parse_token_expiry(token) or int(time.time() + 7200)
 
+    # 1. Try curl (HTTP/2 + browser TLS fingerprint)
+    curl_res = fetch_via_curl(
+        target_url=cleaned_url,
+        dir_path=dir_path,
+        page=page,
+        token=token,
+        token_exp=token_exp,
+        user_agent=chosen_ua,
+        proxy_url=proxy_url
+    )
+    if curl_res is not None:
+        status_code, response_json = curl_res
+        if status_code == 200:
+            return status_code, response_json
+
+        # If Cloudflare challenge is required, attempt auto-refresh from Chrome CDP and retry
+        if allow_retry and (status_code == 403 or response_json.get("code") == "CHALLENGE_REQUIRED"):
+            sys.stdout.write("[!] Upstream requires Turnstile verification. Attempting auto-refresh...\n")
+            sys.stdout.flush()
+            new_token = try_refresh_from_chrome_cdp()
+            if new_token and new_token != token:
+                sys.stdout.write("[+] Retrying request with fresh token...\n")
+                sys.stdout.flush()
+                return fetch_from_upstream(
+                    target_url=target_url,
+                    dir_path=dir_path,
+                    page=page,
+                    tdl_pass=new_token,
+                    proxy_url=proxy_url,
+                    allow_retry=False
+                )
+
+        return status_code, response_json
+
+    # 2. Fallback to urllib.request
     payload: Dict[str, Any] = {"url": cleaned_url}
     if dir_path:
         payload["dir"] = dir_path
@@ -207,10 +299,6 @@ def fetch_from_upstream(
         payload["page"] = page
 
     data_bytes = json.dumps(payload).encode("utf-8")
-    random_ip = generate_random_ip()
-    chosen_ua = random.choice(USER_AGENTS)
-    token_exp = parse_token_expiry(token) or int(time.time() + 7200)
-
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json, text/plain, */*",
@@ -238,7 +326,6 @@ def fetch_from_upstream(
         except Exception:
             err_json = {"error": f"HTTP Error {e.code}", "detail": err_body}
 
-        # If Cloudflare challenge is required, attempt auto-refresh from Chrome CDP and retry
         if allow_retry and (e.code == 403 or err_json.get("code") == "CHALLENGE_REQUIRED"):
             sys.stdout.write("[!] Upstream requires Turnstile verification. Attempting auto-refresh...\n")
             sys.stdout.flush()
