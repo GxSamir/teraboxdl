@@ -1,0 +1,5 @@
+# TeraBoxDL requires ZERO external dependencies!
+# It runs out of the box using Python's standard library.
+#
+# Optional packages (only if you want a terminal progress bar for the CLI):
+# tqdm>=4.66.0
