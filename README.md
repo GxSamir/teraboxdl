@@ -8,13 +8,44 @@ Zero-dependency local API server and scraper for TeraBox links with IP privacy a
 
 ```
 teraboxdl/
-├── server.py            # Local API Server (Zero dependencies, IP privacy, ?url=<url>)
+├── Dockerfile           # Optimized production Docker container (Alpine Python 3.11)
+├── .dockerignore        # Docker ignore rules
+├── server.py            # Local & Production API Server (Zero dependencies, IP privacy)
 ├── main.py              # Command-Line Downloader & Scraper CLI
 ├── terabox_client.py    # Python Client module
 ├── terabox_client.js    # Node.js Client module (Node 18+)
-├── requirements.txt     # Requirements file (standard library only)
+├── requirements.txt     # Standard library documentation
 └── README.md            # Documentation
 ```
+
+---
+
+## 🚀 Coolify Deployment Guide (Auto-Deploy on Push)
+
+This repository includes a production-ready `Dockerfile` optimized for Coolify on Ubuntu VPS.
+
+### 1. Connect Private GitHub Repo to Coolify:
+1. In Coolify: Go to **Projects** -> Select your Project / Environment -> **+ New Resource** -> **Private Repository (with deploy key)**.
+2. Coolify will show you an **SSH Public Key**. Copy it.
+3. Open GitHub: [https://github.com/GxSamir/teraboxdl/settings/keys](https://github.com/GxSamir/teraboxdl/settings/keys) -> Click **Add deploy key**.
+   - Title: `Coolify VPS`
+   - Key: Paste the public key from Coolify.
+   - Click **Add key**.
+4. In Coolify: Enter `git@github.com:GxSamir/teraboxdl.git` and Branch `main`.
+
+### 2. Port & Domain:
+- In Coolify Application Settings:
+  - **Port Exposes**: `8000`
+  - **Domains**: Set your domain (e.g. `https://terabox.yourdomain.com`) or port mapping (e.g. `8080:8000`).
+  *(Note: Since Coolify's dashboard runs on host port 8000, use Traefik domain or an alternate external port like 8080).*
+
+### 3. Auto-Deploy on Git Push:
+1. In Coolify: Go to your App -> **Webhooks** tab -> Copy the **GitHub Webhook URL**.
+2. In GitHub: [https://github.com/GxSamir/teraboxdl/settings/hooks](https://github.com/GxSamir/teraboxdl/settings/hooks) -> Click **Add webhook**.
+   - Payload URL: Paste the URL from Coolify.
+   - Content type: `application/json`
+   - Events: `Just the push event`
+3. Click **Add webhook**. Now every `git push` automatically rebuilds and deploys!
 
 ---
 
