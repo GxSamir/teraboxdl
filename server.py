@@ -25,8 +25,8 @@ import urllib.error
 from typing import Tuple, Dict, Any, Optional
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
-# Fresh fallback session token
-DEFAULT_TDL_PASS: str = "1793079162.1793090308.cb3cd45025054afe.2445650a2f6ed29f24dade96b0526db9d75c4b0012a69a1e5b7d16d3f9c3235d"
+# Fresh fallback session token (signed for VPS deployment IP)
+DEFAULT_TDL_PASS: str = "1793087146.1793094346.c6394c295751a265.f7b8c74f700871cf5c4a72e3c77023f932b502c0241c7096bee141ba212d8579"
 UPSTREAM_API: str = "https://teraboxdl.site/api/proxy"
 COOKIE_FILE: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "latest_cookie.txt")
 
@@ -209,7 +209,7 @@ def fetch_from_upstream(
     data_bytes = json.dumps(payload).encode("utf-8")
     random_ip = generate_random_ip()
     chosen_ua = random.choice(USER_AGENTS)
-    future_expiry = int(time.time() + 86400)
+    token_exp = parse_token_expiry(token) or int(time.time() + 7200)
 
     headers = {
         "Content-Type": "application/json",
@@ -217,7 +217,7 @@ def fetch_from_upstream(
         "Origin": "https://teraboxdl.site",
         "Referer": "https://teraboxdl.site/",
         "User-Agent": chosen_ua,
-        "Cookie": f"tdl_pass={token}; tdl_pass_exp={future_expiry}",
+        "Cookie": f"tdl_pass={token}; tdl_pass_exp={token_exp}",
     }
 
     req = urllib.request.Request(UPSTREAM_API, data=data_bytes, headers=headers, method="POST")
