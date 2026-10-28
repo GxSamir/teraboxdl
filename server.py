@@ -1,6 +1,7 @@
 """
-TeraBoxDL Local API Server
+TeraBoxDL Local & Remote API Server
 Zero-dependency API server using Python's built-in ThreadingHTTPServer.
+Includes automated Cloudflare Turnstile token refresh, IP privacy, and Coolify sync.
 
 Usage:
     python server.py
@@ -19,15 +20,17 @@ import random
 import argparse
 import datetime
 import threading
+import subprocess
 import urllib.request
 import urllib.parse
 import urllib.error
 from typing import Tuple, Dict, Any, Optional
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
-# Fresh fallback session token (signed for VPS deployment IP)
-DEFAULT_TDL_PASS: str = "1793087146.1793094346.c6394c295751a265.f7b8c74f700871cf5c4a72e3c77023f932b502c0241c7096bee141ba212d8579"
+# Fallback session token
+DEFAULT_TDL_PASS: str = "1793198948.1793206148.9ffdaf791022927b.505bb3db7b0a32338d825838d216f9a4608c0282b86c2306208cb136a7a01d51"
 UPSTREAM_API: str = "https://teraboxdl.site/api/proxy"
+UPSTREAM_VERIFY: str = "https://teraboxdl.site/api/verify"
 COOKIE_FILE: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "latest_cookie.txt")
 
 # Coolify auto-sync URL (updates remote VPS server whenever local token updates)
@@ -38,6 +41,7 @@ DEFAULT_COOLIFY_SYNC_URL: str = os.getenv(
 
 # Active dynamic in-memory token
 ACTIVE_TDL_PASS: str = ""
+SOLVER_LOCK = threading.Lock()
 
 # Rotating User-Agents to mimic real varied browser traffic
 USER_AGENTS = [
@@ -52,12 +56,22 @@ USER_AGENTS = [
 def parse_token_expiry(token: str) -> Optional[int]:
     """Extracts expiration timestamp embedded inside tdl_pass token."""
     try:
-        parts = token.split(".")
+        parts = token.strip().split(".")
         if len(parts) >= 2:
             return int(parts[1])
     except Exception:
         pass
     return None
+
+
+def is_token_expired(token: str, buffer_seconds: int = 60) -> bool:
+    """Checks if a token has expired or is about to expire."""
+    if not token or not token.strip():
+        return True
+    exp_ts = parse_token_expiry(token)
+    if not exp_ts:
+        return False
+    return (exp_ts - int(time.time())) <= buffer_seconds
 
 
 def get_token_metadata(token: str) -> Dict[str, Any]:
@@ -85,29 +99,33 @@ def get_token_metadata(token: str) -> Dict[str, Any]:
 def get_current_token() -> str:
     """
     Resolves active token using hierarchy:
-    1. Active in-memory token
+    1. Active in-memory token (if not expired)
     2. latest_cookie.txt file
     3. TDL_PASS environment variable
     4. DEFAULT_TDL_PASS fallback
     """
     global ACTIVE_TDL_PASS
-    if ACTIVE_TDL_PASS and ACTIVE_TDL_PASS.strip():
+    if ACTIVE_TDL_PASS and ACTIVE_TDL_PASS.strip() and not is_token_expired(ACTIVE_TDL_PASS):
         return ACTIVE_TDL_PASS.strip()
 
+    # Check disk file
     if os.path.exists(COOKIE_FILE):
         try:
             with open(COOKIE_FILE, "r", encoding="utf-8") as f:
                 content = f.read().strip()
-                if content:
+                if content and not is_token_expired(content):
                     ACTIVE_TDL_PASS = content
                     return ACTIVE_TDL_PASS
         except Exception:
             pass
 
     env_token = os.getenv("TDL_PASS", "").strip()
-    if env_token:
+    if env_token and not is_token_expired(env_token):
         ACTIVE_TDL_PASS = env_token
         return ACTIVE_TDL_PASS
+
+    if ACTIVE_TDL_PASS and ACTIVE_TDL_PASS.strip():
+        return ACTIVE_TDL_PASS.strip()
 
     ACTIVE_TDL_PASS = DEFAULT_TDL_PASS
     return ACTIVE_TDL_PASS
@@ -147,42 +165,117 @@ def _sync_to_coolify(token: str) -> None:
         sys.stderr.write(f"[!] Coolify sync note: {e}\n")
 
 
-def try_refresh_from_chrome_cdp() -> Optional[str]:
+def trigger_auto_solve() -> Optional[str]:
     """
-    Connects to local Chrome browser via DevTools Protocol (port 9222)
-    and extracts fresh 'tdl_pass' cookie without opening new windows.
+    Executes automated Turnstile solver on local machine:
+    Solves challenge, captures tokens, updates local cookie, and syncs to Coolify VPS.
+    Uses SOLVER_LOCK to avoid redundant simultaneous browser runs.
     """
+    global ACTIVE_TDL_PASS
+    if not SOLVER_LOCK.acquire(blocking=False):
+        sys.stdout.write("[*] Auto-solver already running in another thread, waiting...\n")
+        sys.stdout.flush()
+        with SOLVER_LOCK:
+            return ACTIVE_TDL_PASS
+
     try:
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222", timeout=5000)
-            for ctx in browser.contexts:
-                for c in ctx.cookies():
-                    if c.get("name") == "tdl_pass" and c.get("value"):
-                        val = c["value"]
-                        set_active_token(val, save_file=True, sync_remote=True)
-                        sys.stdout.write(f"[+] Extracted fresh tdl_pass from Chrome CDP: {val[:30]}...\n")
-                        sys.stdout.flush()
-                        return val
-    except Exception:
-        pass
+        sys.stdout.write("[*] Launching Turnstile auto-solver...\n")
+        sys.stdout.flush()
+        try:
+            from auto_solver import solve_turnstile_locally
+            cookie, vps_token = solve_turnstile_locally(coolify_url=DEFAULT_COOLIFY_SYNC_URL)
+            if cookie:
+                set_active_token(cookie, save_file=True, sync_remote=False)
+                sys.stdout.write(f"[+] Auto-solver success! Fresh tdl_pass: {cookie[:32]}...\n")
+                sys.stdout.flush()
+                return cookie
+            else:
+                sys.stderr.write("[-] Auto-solver could not extract cookie.\n")
+        except ImportError:
+            sys.stderr.write("[!] auto_solver.py not found or playwright missing on this environment.\n")
+        except Exception as e:
+            sys.stderr.write(f"[!] Auto-solver error: {e}\n")
+    finally:
+        SOLVER_LOCK.release()
+
     return None
 
 
-def generate_random_ip() -> str:
-    """Generates a random public IP address to rotate origin headers."""
-    prefixes = [
-        (104, random.randint(16, 31)),
-        (198, 51),
-        (203, 0),
-        (185, random.randint(10, 220)),
-        (194, random.randint(50, 180)),
-        (156, random.randint(30, 200)),
-    ]
-    p1, p2 = random.choice(prefixes)
-    p3 = random.randint(1, 254)
-    p4 = random.randint(1, 254)
-    return f"{p1}.{p2}.{p3}.{p4}"
+def verify_turnstile_on_vps(turnstile_token: str) -> Tuple[bool, Dict[str, Any]]:
+    """
+    Executes POST https://teraboxdl.site/api/verify from THIS server's IP address.
+    Extracts the issued tdl_pass cookie (signed for this machine's IP) and activates it.
+    """
+    try:
+        payload_bytes = json.dumps({"token": turnstile_token.strip()}).encode("utf-8")
+        chosen_ua = random.choice(USER_AGENTS)
+
+        # 1. Try curl for HTTP/2 support
+        try:
+            cmd = [
+                "curl", "-s", "-i",
+                "-X", "POST", UPSTREAM_VERIFY,
+                "-H", "Content-Type: application/json",
+                "-H", "Origin: https://teraboxdl.site",
+                "-H", "Referer: https://teraboxdl.site/",
+                "-H", f"User-Agent: {chosen_ua}",
+                "-d", json.dumps({"token": turnstile_token.strip()})
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+            if proc.returncode == 0 and proc.stdout:
+                stdout_text = proc.stdout
+                extracted_cookie = None
+                for line in stdout_text.splitlines():
+                    if line.lower().startswith("set-cookie:"):
+                        cookie_part = line.split(":", 1)[1].strip()
+                        for c in cookie_part.split(";"):
+                            if c.strip().startswith("tdl_pass="):
+                                extracted_cookie = c.strip().split("=", 1)[1].strip()
+                                break
+                    if extracted_cookie:
+                        break
+
+                if extracted_cookie:
+                    meta = set_active_token(extracted_cookie, save_file=True, sync_remote=False)
+                    return True, {"status": "vps_verified_via_curl", "token_info": meta}
+        except Exception:
+            pass
+
+        # 2. Fallback to urllib.request
+        req = urllib.request.Request(
+            UPSTREAM_VERIFY,
+            data=payload_bytes,
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "https://teraboxdl.site",
+                "Referer": "https://teraboxdl.site/",
+                "User-Agent": chosen_ua
+            },
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            set_cookies = resp.headers.get_all("Set-Cookie") or []
+            extracted_cookie = None
+            for sc in set_cookies:
+                for c in sc.split(";"):
+                    if c.strip().startswith("tdl_pass="):
+                        extracted_cookie = c.strip().split("=", 1)[1].strip()
+                        break
+                if extracted_cookie:
+                    break
+
+            if extracted_cookie:
+                meta = set_active_token(extracted_cookie, save_file=True, sync_remote=False)
+                return True, {"status": "vps_verified_via_urllib", "token_info": meta}
+
+            body = resp.read().decode("utf-8", errors="ignore")
+            return False, {"error": "No tdl_pass cookie in upstream response", "response": body}
+
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode("utf-8", errors="ignore")
+        return False, {"error": f"HTTP {e.code}", "detail": err_body}
+    except Exception as e:
+        return False, {"error": "VPS verify exception", "detail": str(e)}
 
 
 def fetch_via_curl(
@@ -199,7 +292,6 @@ def fetch_via_curl(
     to prevent Cloudflare bot detection on datacenter IPs.
     """
     try:
-        import subprocess
         payload: Dict[str, Any] = {"url": target_url.strip()}
         if dir_path:
             payload["dir"] = dir_path
@@ -250,7 +342,7 @@ def fetch_from_upstream(
     """
     Forwards request to upstream API with browser headers, rotating user-agents, and dynamic cookies.
     Tries curl first for HTTP/2 TLS support, with urllib as standard fallback.
-    Automatically retries with Chrome CDP auto-refresh if CHALLENGE_REQUIRED is encountered.
+    Automatically refreshes token on CHALLENGE_REQUIRED and retries.
     """
     token = tdl_pass or get_current_token()
     cleaned_url = target_url.strip()
@@ -272,13 +364,13 @@ def fetch_from_upstream(
         if status_code == 200:
             return status_code, response_json
 
-        # If Cloudflare challenge is required, attempt auto-refresh from Chrome CDP and retry
-        if allow_retry and (status_code == 403 or response_json.get("code") == "CHALLENGE_REQUIRED"):
-            sys.stdout.write("[!] Upstream requires Turnstile verification. Attempting auto-refresh...\n")
+        # If Cloudflare challenge is required, attempt auto-refresh and retry once
+        if allow_retry and (status_code == 403 or (isinstance(response_json, dict) and response_json.get("code") == "CHALLENGE_REQUIRED")):
+            sys.stdout.write("[!] Upstream requires Turnstile verification. Attempting auto-solve...\n")
             sys.stdout.flush()
-            new_token = try_refresh_from_chrome_cdp()
+            new_token = trigger_auto_solve()
             if new_token and new_token != token:
-                sys.stdout.write("[+] Retrying request with fresh token...\n")
+                sys.stdout.write("[+] Retrying request with freshly solved token...\n")
                 sys.stdout.flush()
                 return fetch_from_upstream(
                     target_url=target_url,
@@ -326,12 +418,12 @@ def fetch_from_upstream(
         except Exception:
             err_json = {"error": f"HTTP Error {e.code}", "detail": err_body}
 
-        if allow_retry and (e.code == 403 or err_json.get("code") == "CHALLENGE_REQUIRED"):
-            sys.stdout.write("[!] Upstream requires Turnstile verification. Attempting auto-refresh...\n")
+        if allow_retry and (e.code == 403 or (isinstance(err_json, dict) and err_json.get("code") == "CHALLENGE_REQUIRED")):
+            sys.stdout.write("[!] Upstream requires Turnstile verification. Attempting auto-solve...\n")
             sys.stdout.flush()
-            new_token = try_refresh_from_chrome_cdp()
+            new_token = trigger_auto_solve()
             if new_token and new_token != token:
-                sys.stdout.write("[+] Retrying request with fresh token...\n")
+                sys.stdout.write("[+] Retrying request with freshly solved token...\n")
                 sys.stdout.flush()
                 return fetch_from_upstream(
                     target_url=target_url,
@@ -382,7 +474,8 @@ class TeraBoxAPIHandler(BaseHTTPRequestHandler):
         - /health
         - /token-status
         - /update-token?token=<NEW_TOKEN>
-        - /refresh-token
+        - /vps-verify?token=<TURNSTILE_TOKEN>
+        - /auto-refresh
         """
         parsed = urllib.parse.urlparse(self.path)
         query_params = urllib.parse.parse_qs(parsed.query)
@@ -398,6 +491,7 @@ class TeraBoxAPIHandler(BaseHTTPRequestHandler):
             meta = get_token_metadata(token)
             meta["status"] = "online"
             meta["storage_file"] = os.path.exists(COOKIE_FILE)
+            meta["coolify_sync_url"] = DEFAULT_COOLIFY_SYNC_URL
             self._send_json_response(200, meta)
             return
 
@@ -411,16 +505,26 @@ class TeraBoxAPIHandler(BaseHTTPRequestHandler):
             self._send_json_response(200, {"status": "updated", "token_info": meta})
             return
 
-        # Force refresh via Chrome CDP
-        if parsed.path == "/refresh-token":
-            refreshed = try_refresh_from_chrome_cdp()
-            if refreshed:
-                meta = get_token_metadata(refreshed)
-                self._send_json_response(200, {"status": "refreshed_from_chrome", "token_info": meta})
+        # VPS verify via GET
+        if parsed.path == "/vps-verify":
+            turnstile_token = query_params.get("token", [None])[0]
+            if not turnstile_token:
+                self._send_json_response(400, {"error": "Missing 'token' query parameter"})
+                return
+            success, result = verify_turnstile_on_vps(turnstile_token)
+            self._send_json_response(200 if success else 400, result)
+            return
+
+        # Force auto-refresh
+        if parsed.path in ("/refresh-token", "/auto-refresh"):
+            fresh = trigger_auto_solve()
+            if fresh:
+                meta = get_token_metadata(fresh)
+                self._send_json_response(200, {"status": "auto_refreshed", "token_info": meta})
             else:
                 self._send_json_response(503, {
-                    "error": "Could not extract cookie from Chrome CDP",
-                    "hint": "Ensure Chrome is running with --remote-debugging-port=9222 and has visited teraboxdl.site"
+                    "error": "Auto-refresh failed",
+                    "hint": "Ensure Chrome is installed and playwright is available on this host."
                 })
             return
 
@@ -441,6 +545,7 @@ class TeraBoxAPIHandler(BaseHTTPRequestHandler):
                 "service": "TeraBoxDL Scraper & Direct Link API",
                 "usage": "/?url=<TERABOX_URL>",
                 "token_status": f"http://{host_header}/token-status",
+                "auto_refresh": f"http://{host_header}/auto-refresh",
                 "example": f"http://{host_header}/?url=https://freeterabox.com/s/1ZtWhQTzbztneHLVWEbZ2uA",
                 "token_expiry": get_token_metadata(get_current_token())
             }
@@ -462,6 +567,8 @@ class TeraBoxAPIHandler(BaseHTTPRequestHandler):
         Handle POST requests:
         - / (JSON payload: {"url": "..."})
         - /update-token (JSON payload: {"token": "..."})
+        - /vps-verify (JSON payload: {"token": "..."})
+        - /auto-refresh
         """
         parsed = urllib.parse.urlparse(self.path)
         content_length = int(self.headers.get("Content-Length", 0))
@@ -484,6 +591,26 @@ class TeraBoxAPIHandler(BaseHTTPRequestHandler):
                 return
             meta = set_active_token(new_token, save_file=True, sync_remote=False)
             self._send_json_response(200, {"status": "updated", "token_info": meta})
+            return
+
+        # VPS verify endpoint
+        if parsed.path == "/vps-verify":
+            turnstile_token = data.get("token")
+            if not turnstile_token:
+                self._send_json_response(400, {"error": "Missing 'token' in JSON body"})
+                return
+            success, result = verify_turnstile_on_vps(turnstile_token)
+            self._send_json_response(200 if success else 400, result)
+            return
+
+        # Auto refresh endpoint
+        if parsed.path in ("/refresh-token", "/auto-refresh"):
+            fresh = trigger_auto_solve()
+            if fresh:
+                meta = get_token_metadata(fresh)
+                self._send_json_response(200, {"status": "auto_refreshed", "token_info": meta})
+            else:
+                self._send_json_response(503, {"error": "Auto-refresh failed"})
             return
 
         target_url = data.get("url")
@@ -515,12 +642,43 @@ class TeraBoxAPIHandler(BaseHTTPRequestHandler):
         sys.stdout.flush()
 
 
+def _auto_refresh_worker() -> None:
+    """
+    Background worker that runs every 45 seconds:
+    Monitors token expiration. When seconds_remaining < 1800 (under 30 minutes left)
+    or token is expired, automatically solves Turnstile and syncs local and remote tokens.
+    """
+    while True:
+        try:
+            token = get_current_token()
+            meta = get_token_metadata(token)
+            rem = meta.get("seconds_remaining")
+            is_exp = meta.get("is_expired", False)
+
+            if is_exp or rem is None or rem < 1800:
+                sys.stdout.write(f"[*] Background monitor: Token expiring in {rem}s. Triggering automatic refresh...\n")
+                sys.stdout.flush()
+                fresh = trigger_auto_solve()
+                if fresh:
+                    fresh_meta = get_token_metadata(fresh)
+                    sys.stdout.write(f"[+] Background monitor: Token refreshed! Expires at: {fresh_meta['expires_at']} ({fresh_meta['seconds_remaining']}s)\n")
+                    sys.stdout.flush()
+        except Exception as e:
+            sys.stderr.write(f"[!] Background monitor exception: {e}\n")
+
+        time.sleep(45)
+
+
 def run_server(port: int = 8000, host: str = "0.0.0.0", proxy: Optional[str] = None) -> None:
     TeraBoxAPIHandler.proxy_url = proxy or os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY")
 
     # Load initial token
     initial_token = get_current_token()
     token_meta = get_token_metadata(initial_token)
+
+    # Start background auto-refresh daemon thread
+    worker_thread = threading.Thread(target=_auto_refresh_worker, daemon=True)
+    worker_thread.start()
 
     server_address = (host, port)
     httpd = ThreadingHTTPServer(server_address, TeraBoxAPIHandler)
@@ -529,7 +687,7 @@ def run_server(port: int = 8000, host: str = "0.0.0.0", proxy: Optional[str] = N
     print(f"[*] TeraBoxDL Server running on http://{host}:{port}")
     print(f"[*] Active Token: {token_meta['token_preview']}")
     print(f"[*] Token Expiration: {token_meta['expires_at']} ({token_meta['seconds_remaining']}s remaining)")
-    print(f"[*] IP Privacy: Enabled (Rotating Public IP Headers + User-Agents)")
+    print(f"[*] Auto-Refresh Daemon: Active (auto-updates 30m before expiry)")
     if TeraBoxAPIHandler.proxy_url:
         print(f"[*] Network Proxy: {TeraBoxAPIHandler.proxy_url}")
     print(f"[*] Health Check: http://{host}:{port}/health")

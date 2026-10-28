@@ -2,6 +2,9 @@ FROM python:3.11-alpine
 
 WORKDIR /app
 
+# Install curl for HTTP/2 support and wget for healthcheck
+RUN apk add --no-cache curl
+
 # Ensure unbuffered logs and clean bytecode
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
