@@ -522,10 +522,20 @@ class TeraBoxAPIHandler(BaseHTTPRequestHandler):
                 meta = get_token_metadata(fresh)
                 self._send_json_response(200, {"status": "auto_refreshed", "token_info": meta})
             else:
-                self._send_json_response(503, {
-                    "error": "Auto-refresh failed",
-                    "hint": "Ensure Chrome is installed and playwright is available on this host."
-                })
+                current_tok = get_current_token()
+                meta = get_token_metadata(current_tok)
+                if not meta.get("is_expired") and (meta.get("seconds_remaining") or 0) > 0:
+                    self._send_json_response(200, {
+                        "status": "active",
+                        "message": "Token is active and valid. Sessions are automatically refreshed and synchronized via /vps-verify.",
+                        "token_info": meta
+                    })
+                else:
+                    self._send_json_response(200, {
+                        "status": "challenge_required",
+                        "message": "Session expired. Run 'python auto_solver.py' on your host to sync a fresh session to /vps-verify.",
+                        "token_info": meta
+                    })
             return
 
         target_url = query_params.get("url", [None])[0]
@@ -540,13 +550,14 @@ class TeraBoxAPIHandler(BaseHTTPRequestHandler):
 
         if not target_url:
             host_header = self.headers.get("Host", "localhost:8000")
+            proto = self.headers.get("X-Forwarded-Proto") or ("https" if "teraboxfast.com" in host_header else "http")
             help_doc = {
                 "status": "online",
                 "service": "TeraBoxDL Scraper & Direct Link API",
                 "usage": "/?url=<TERABOX_URL>",
-                "token_status": f"http://{host_header}/token-status",
-                "auto_refresh": f"http://{host_header}/auto-refresh",
-                "example": f"http://{host_header}/?url=https://freeterabox.com/s/1ZtWhQTzbztneHLVWEbZ2uA",
+                "token_status": f"{proto}://{host_header}/token-status",
+                "vps_verify_endpoint": f"{proto}://{host_header}/vps-verify",
+                "example": f"{proto}://{host_header}/?url=https://freeterabox.com/s/1ZtWhQTzbztneHLVWEbZ2uA",
                 "token_expiry": get_token_metadata(get_current_token())
             }
             self._send_json_response(200, help_doc)
@@ -610,7 +621,20 @@ class TeraBoxAPIHandler(BaseHTTPRequestHandler):
                 meta = get_token_metadata(fresh)
                 self._send_json_response(200, {"status": "auto_refreshed", "token_info": meta})
             else:
-                self._send_json_response(503, {"error": "Auto-refresh failed"})
+                current_tok = get_current_token()
+                meta = get_token_metadata(current_tok)
+                if not meta.get("is_expired") and (meta.get("seconds_remaining") or 0) > 0:
+                    self._send_json_response(200, {
+                        "status": "active",
+                        "message": "Token is active and valid. Synchronized via /vps-verify.",
+                        "token_info": meta
+                    })
+                else:
+                    self._send_json_response(200, {
+                        "status": "challenge_required",
+                        "message": "Session expired. Run 'python auto_solver.py' on your host to sync /vps-verify.",
+                        "token_info": meta
+                    })
             return
 
         target_url = data.get("url")
