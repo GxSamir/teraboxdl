@@ -22,18 +22,22 @@ teraboxdl/
 
 ---
 
-## 🔄 Automated Token Refresh System (Never Expires)
+## 🔄 Automated Token Refresh System (Refreshes Every 5 Minutes)
 
 Upstream `teraboxdl.site` uses Cloudflare Turnstile and issues a session cookie (`tdl_pass`) that expires after **2 hours** (7,200 seconds) and is cryptographically bound to the client's IP.
 
-To prevent `CHALLENGE_REQUIRED` errors from ever happening:
+To prevent tokens from ever degrading or reaching expiration:
 
-1. **Background Daemon Worker**:
-   - `server.py` runs a background monitor thread checking token expiration every 45 seconds.
-   - When remaining validity drops below **30 minutes** or the token expires, it automatically triggers `auto_solver.py`.
+1. **5-Minute Continuous Auto-Refresh Worker**:
+   - `server.py` runs a background monitor thread that automatically triggers a fresh solve **every 5 minutes (300 seconds)**.
+   - It captures fresh Turnstile tokens and syncs them to `https://tbf-dl.teraboxfast.com/vps-verify` so your VPS session is continuously refreshed 24/7.
+   - You can also run the standalone 5-minute sync daemon:
+     ```bash
+     python auto_solver.py --loop
+     ```
 
 2. **Automated Turnstile Solver (`auto_solver.py`)**:
-   - Connects to an existing Chrome instance on port 9222 if open, or launches a temporary background offscreen Chrome instance (`--window-position=-2500,-2500`).
+   - Connects to an existing Chrome instance on port 9222 if open, or launches a background offscreen Chrome instance (`--window-position=-2500,-2500`).
    - Completes the Turnstile challenge in ~4 seconds without user interaction.
    - Updates `latest_cookie.txt` and memory cache.
    - Forwards a fresh Turnstile token to Coolify VPS (`/vps-verify`), allowing the VPS to call `POST https://teraboxdl.site/api/verify` from its own IP and obtain a VPS-signed token!

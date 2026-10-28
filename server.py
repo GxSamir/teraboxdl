@@ -666,31 +666,44 @@ class TeraBoxAPIHandler(BaseHTTPRequestHandler):
         sys.stdout.flush()
 
 
+# Auto-refresh cycle interval in seconds (default: 5 minutes / 300s)
+AUTO_REFRESH_INTERVAL_SECONDS: int = int(os.getenv("REFRESH_INTERVAL", "300"))
+
+
 def _auto_refresh_worker() -> None:
     """
-    Background worker that runs every 45 seconds:
-    Monitors token expiration. When seconds_remaining < 1800 (under 30 minutes left)
-    or token is expired, automatically solves Turnstile and syncs local and remote tokens.
+    Background worker that runs continuously and refreshes tokens every 5 minutes:
+    Automatically solves Turnstile and syncs local and remote tokens so that the session
+    is perpetually fresh and never reaches expiration.
     """
+    last_refresh_time = 0.0
+
     while True:
         try:
+            now = time.time()
+            elapsed = now - last_refresh_time
             token = get_current_token()
             meta = get_token_metadata(token)
             rem = meta.get("seconds_remaining")
             is_exp = meta.get("is_expired", False)
 
-            if is_exp or rem is None or rem < 1800:
-                sys.stdout.write(f"[*] Background monitor: Token expiring in {rem}s. Triggering automatic refresh...\n")
+            # Refresh every 5 minutes (300 seconds), or immediately if expired/invalid
+            if elapsed >= AUTO_REFRESH_INTERVAL_SECONDS or is_exp or rem is None or rem < 1800:
+                sys.stdout.write(f"[*] Background monitor: 5-minute refresh triggered (elapsed: {int(elapsed)}s). Refreshing tokens...\n")
                 sys.stdout.flush()
                 fresh = trigger_auto_solve()
                 if fresh:
+                    last_refresh_time = time.time()
                     fresh_meta = get_token_metadata(fresh)
-                    sys.stdout.write(f"[+] Background monitor: Token refreshed! Expires at: {fresh_meta['expires_at']} ({fresh_meta['seconds_remaining']}s)\n")
+                    sys.stdout.write(f"[+] Background monitor: Token refreshed successfully! Next refresh in 5 minutes.\n")
                     sys.stdout.flush()
+                else:
+                    # Retry in 30 seconds if solve failed
+                    last_refresh_time = now - AUTO_REFRESH_INTERVAL_SECONDS + 30
         except Exception as e:
             sys.stderr.write(f"[!] Background monitor exception: {e}\n")
 
-        time.sleep(45)
+        time.sleep(15)
 
 
 def run_server(port: int = 8000, host: str = "0.0.0.0", proxy: Optional[str] = None) -> None:
@@ -711,7 +724,7 @@ def run_server(port: int = 8000, host: str = "0.0.0.0", proxy: Optional[str] = N
     print(f"[*] TeraBoxDL Server running on http://{host}:{port}")
     print(f"[*] Active Token: {token_meta['token_preview']}")
     print(f"[*] Token Expiration: {token_meta['expires_at']} ({token_meta['seconds_remaining']}s remaining)")
-    print(f"[*] Auto-Refresh Daemon: Active (auto-updates 30m before expiry)")
+    print(f"[*] Auto-Refresh Daemon: Active (refreshes every 5 minutes)")
     if TeraBoxAPIHandler.proxy_url:
         print(f"[*] Network Proxy: {TeraBoxAPIHandler.proxy_url}")
     print(f"[*] Health Check: http://{host}:{port}/health")

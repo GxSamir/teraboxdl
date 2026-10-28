@@ -208,9 +208,23 @@ def solve_turnstile_locally(
     return local_tdl_pass, vps_turnstile_token
 
 
+import datetime
+
 if __name__ == "__main__":
-    coolify_target = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_VPS_URL
-    print(f"[*] Running automated Turnstile solver (target: {coolify_target})...")
-    cookie, token = solve_turnstile_locally(coolify_url=coolify_target)
-    print(f"[+] Local tdl_pass: {cookie[:40] if cookie else None}")
-    print(f"[+] VPS Turnstile token: {token[:40] if token else None}")
+    coolify_target = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("--") else DEFAULT_VPS_URL
+    is_loop = "--loop" in sys.argv or "--daemon" in sys.argv
+
+    if is_loop:
+        print(f"[*] Starting recurring 5-minute Turnstile sync daemon (target: {coolify_target})...")
+        while True:
+            print(f"\n[*] [{datetime.datetime.now().strftime('%H:%M:%S')}] Solving Turnstile...")
+            cookie, token = solve_turnstile_locally(coolify_url=coolify_target)
+            print(f"[+] Local tdl_pass: {cookie[:30] if cookie else None}")
+            print(f"[+] VPS token: {token[:30] if token else None}")
+            print("[*] Waiting 5 minutes for next cycle...")
+            time.sleep(300)
+    else:
+        print(f"[*] Running automated Turnstile solver (target: {coolify_target})...")
+        cookie, token = solve_turnstile_locally(coolify_url=coolify_target)
+        print(f"[+] Local tdl_pass: {cookie[:40] if cookie else None}")
+        print(f"[+] VPS Turnstile token: {token[:40] if token else None}")
