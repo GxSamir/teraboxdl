@@ -1,6 +1,6 @@
 # TeraBoxDL Scraper & Local API Server
 
-Zero-dependency local API server and scraper for TeraBox links with IP privacy and rotating origin headers.
+Production-ready API server and scraper for TeraBox links with automated Cloudflare Turnstile bypass, auto-updating session tokens, IP privacy, and Coolify deployment support.
 
 ---
 
@@ -8,75 +8,61 @@ Zero-dependency local API server and scraper for TeraBox links with IP privacy a
 
 ```
 teraboxdl/
-├── Dockerfile           # Optimized production Docker container (Alpine Python 3.11)
+├── Dockerfile           # Optimized production Docker container (Alpine Python 3.11 with curl HTTP/2)
 ├── .dockerignore        # Docker ignore rules
-├── server.py            # Local & Production API Server (Zero dependencies, IP privacy)
+├── server.py            # Local & Production API Server with Auto-Refresh Daemon & /vps-verify
+├── auto_solver.py       # Automated Cloudflare Turnstile Solver (Chrome CDP / Offscreen Chrome)
 ├── main.py              # Command-Line Downloader & Scraper CLI
 ├── terabox_client.py    # Python Client module
 ├── terabox_client.js    # Node.js Client module (Node 18+)
-├── requirements.txt     # Standard library documentation
+├── latest_cookie.txt    # Persistent cache of latest working tdl_pass session token
+├── requirements.txt     # Dependency information
 └── README.md            # Documentation
 ```
 
 ---
 
-## 🚀 Coolify Deployment Guide (Auto-Deploy on Push)
+## 🔄 Automated Token Refresh System (Never Expires)
 
-This repository includes a production-ready `Dockerfile` optimized for Coolify on Ubuntu VPS.
+Upstream `teraboxdl.site` uses Cloudflare Turnstile and issues a session cookie (`tdl_pass`) that expires after **2 hours** (7,200 seconds) and is cryptographically bound to the client's IP.
 
-### 1. Connect Private GitHub Repo to Coolify:
-1. In Coolify: Go to **Projects** -> Select your Project / Environment -> **+ New Resource** -> **Private Repository (with deploy key)**.
-2. Coolify will show you an **SSH Public Key**. Copy it.
-3. Open GitHub: [https://github.com/GxSamir/teraboxdl/settings/keys](https://github.com/GxSamir/teraboxdl/settings/keys) -> Click **Add deploy key**.
-   - Title: `Coolify VPS`
-   - Key: Paste the public key from Coolify.
-   - Click **Add key**.
-4. In Coolify: Enter `git@github.com:GxSamir/teraboxdl.git` and Branch `main`.
+To prevent `CHALLENGE_REQUIRED` errors from ever happening:
 
-### 2. Port & Domain:
-- In Coolify Application Settings:
-  - **Port Exposes**: `8000`
-  - **Domains**: Set your domain (e.g. `https://terabox.yourdomain.com`) or port mapping (e.g. `8080:8000`).
-  *(Note: Since Coolify's dashboard runs on host port 8000, use Traefik domain or an alternate external port like 8080).*
+1. **Background Daemon Worker**:
+   - `server.py` runs a background monitor thread checking token expiration every 45 seconds.
+   - When remaining validity drops below **30 minutes** or the token expires, it automatically triggers `auto_solver.py`.
 
-### 3. Auto-Deploy on Git Push:
-1. In Coolify: Go to your App -> **Webhooks** tab -> Copy the **GitHub Webhook URL**.
-2. In GitHub: [https://github.com/GxSamir/teraboxdl/settings/hooks](https://github.com/GxSamir/teraboxdl/settings/hooks) -> Click **Add webhook**.
-   - Payload URL: Paste the URL from Coolify.
-   - Content type: `application/json`
-   - Events: `Just the push event`
-3. Click **Add webhook**. Now every `git push` automatically rebuilds and deploys!
+2. **Automated Turnstile Solver (`auto_solver.py`)**:
+   - Connects to an existing Chrome instance on port 9222 if open, or launches a temporary background offscreen Chrome instance (`--window-position=-2500,-2500`).
+   - Completes the Turnstile challenge in ~4 seconds without user interaction.
+   - Updates `latest_cookie.txt` and memory cache.
+   - Forwards a fresh Turnstile token to Coolify VPS (`/vps-verify`), allowing the VPS to call `POST https://teraboxdl.site/api/verify` from its own IP and obtain a VPS-signed token!
+
+3. **On-Demand Auto-Recovery**:
+   - If upstream ever responds with `403 CHALLENGE_REQUIRED`, `server.py` catches it, immediately triggers `auto_solver.py`, updates the token, and automatically retries the user's request.
 
 ---
 
 ## ⚡ 1. Run the Local API Server
 
-The server runs on Python's built-in standard library with **zero dependencies**:
-
 ```bash
 python server.py
 ```
-*(Default runs on `http://127.0.0.1:8000`)*
+*(Runs on `http://127.0.0.1:8000`)*
 
-### IP Privacy & Anti-Blocking Features Included:
-- **Randomized Origin IP Headers**: Every request dynamically rotates `X-Forwarded-For`, `X-Real-IP`, and `Client-IP` to prevent the platform from blocking or tracking your real IP address.
-- **Rotating User-Agents**: Cycles across realistic modern Windows, Mac, and Linux browser agents.
-- **Dynamic Session Expiry**: Generates forward-dated expiration timestamps automatically.
-- **Optional Network Proxy**: Route all TCP connections through your own HTTP/SOCKS proxy:
-  ```bash
-  python server.py --proxy http://username:password@ip:port
-  ```
+### Endpoints:
+- `GET /?url=<TERABOX_URL>` - Resolve file list, sizes, and direct download links.
+- `POST /` - Accepts `{"url": "..."}` JSON payload.
+- `GET /token-status` - Check current token, seconds remaining, and expiration time.
+- `GET /auto-refresh` - Manually trigger an instant Turnstile solve and token refresh.
+- `POST /vps-verify` - Accepts Turnstile token `{"token": "..."}` to sign a session for the server's IP.
+- `GET /health` - Healthcheck endpoint.
 
 ---
 
 ## 🔗 2. Requesting the API
 
 ### GET Request:
-```text
-http://127.0.0.1:8000/?url=<ANY_TERABOX_URL>
-```
-
-### Example:
 ```bash
 curl "http://127.0.0.1:8000/?url=https://freeterabox.com/s/1ZtWhQTzbztneHLVWEbZ2uA"
 ```
@@ -90,9 +76,17 @@ curl -X POST "http://127.0.0.1:8000/" \
 
 ---
 
-## 📥 3. Command-Line Downloader (CLI)
+## 🚀 3. Coolify Deployment
 
-You can also resolve or download files directly from the command line:
+1. The project has been pushed to GitHub: [https://github.com/GxSamir/teraboxdl](https://github.com/GxSamir/teraboxdl).
+2. In your Coolify dashboard:
+   - Application URL: [http://201.18.200.27:8000/project/evrsjb269wkhmzgfz7as7foa/environment/suwwdz8onpbxsqhhkbjon41y/application/4gqy7obbm2xc5z1067zjb0y2](http://201.18.200.27:8000/project/evrsjb269wkhmzgfz7as7foa/environment/suwwdz8onpbxsqhhkbjon41y/application/4gqy7obbm2xc5z1067zjb0y2)
+   - Click **Redeploy** to pull the latest changes.
+3. Once deployed, the local server will continuously keep both local and Coolify tokens updated in the background.
+
+---
+
+## 📥 4. Command-Line Downloader (CLI)
 
 ```bash
 # Print file metadata and direct links
@@ -107,7 +101,7 @@ python main.py "https://freeterabox.com/s/1ZtWhQTzbztneHLVWEbZ2uA" --json
 
 ---
 
-## ⚡ 4. Node.js Client
+## ⚡ 5. Node.js Client
 
 ```bash
 node terabox_client.js "https://freeterabox.com/s/1ZtWhQTzbztneHLVWEbZ2uA"
