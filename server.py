@@ -36,7 +36,7 @@ COOKIE_FILE: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lat
 # Coolify auto-sync URL (updates remote VPS server whenever local token updates)
 DEFAULT_COOLIFY_SYNC_URL: str = os.getenv(
     "COOLIFY_SYNC_URL",
-    "http://4gqy7obbm2xc5z1067zjb0y2.201.18.200.27.sslip.io"
+    "https://tbf-dl.teraboxfast.com"
 )
 
 # Active dynamic in-memory token

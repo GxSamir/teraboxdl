@@ -15,6 +15,7 @@ import json
 from typing import Optional, Dict, Any, Tuple
 
 DEFAULT_TERABOX_TEST_URL = "https://1024terabox.com/s/1t2m3ENR75NinLa_v6FM2pg"
+DEFAULT_VPS_URL = "https://tbf-dl.teraboxfast.com"
 
 
 def is_port_open(port: int = 9222, host: str = "127.0.0.1") -> bool:
@@ -54,7 +55,7 @@ def send_token_to_vps(vps_url: str, turnstile_token: str) -> bool:
             data=payload,
             headers={
                 "Content-Type": "application/json",
-                "User-Agent": "TeraBoxDL-Solver/1.0"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             },
             method="POST"
         )
@@ -81,6 +82,7 @@ def solve_turnstile_locally(
        and transmits it to VPS /vps-verify so VPS gets its own IP-matched tdl_pass.
     4. Returns (local_tdl_pass, vps_turnstile_token).
     """
+    target_vps = coolify_url or DEFAULT_VPS_URL
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -131,10 +133,15 @@ def solve_turnstile_locally(
             # Step 1: Solve for local machine
             page.goto("https://teraboxdl.site/", wait_until="domcontentloaded", timeout=25000)
             page.wait_for_timeout(1000)
-            inp = page.locator("input").first
+            inp = page.locator('input[placeholder*="Terabox"]').first
             if inp.is_visible(timeout=5000):
                 inp.fill(DEFAULT_TERABOX_TEST_URL)
-                page.keyboard.press("Enter")
+                page.wait_for_timeout(500)
+                btn = page.locator('form button[type="submit"]').first
+                if btn.is_visible(timeout=2000):
+                    btn.click()
+                else:
+                    page.keyboard.press("Enter")
             page.wait_for_timeout(4000)
 
             for c in ctx.cookies():
@@ -142,8 +149,8 @@ def solve_turnstile_locally(
                     local_tdl_pass = c["value"]
                     break
 
-            # Step 2: If coolify_url is configured, solve for VPS
-            if coolify_url and "localhost" not in coolify_url and "127.0.0.1" not in coolify_url:
+            # Step 2: If target_vps is configured, solve for VPS
+            if target_vps and "localhost" not in target_vps and "127.0.0.1" not in target_vps:
                 ctx.clear_cookies()
                 vps_tokens = []
 
@@ -164,10 +171,15 @@ def solve_turnstile_locally(
                 page.reload(wait_until="domcontentloaded")
                 page.wait_for_timeout(1500)
 
-                inp = page.locator("input").first
+                inp = page.locator('input[placeholder*="Terabox"]').first
                 if inp.is_visible(timeout=5000):
                     inp.fill(DEFAULT_TERABOX_TEST_URL)
-                    page.keyboard.press("Enter")
+                    page.wait_for_timeout(500)
+                    btn = page.locator('form button[type="submit"]').first
+                    if btn.is_visible(timeout=2000):
+                        btn.click()
+                    else:
+                        page.keyboard.press("Enter")
 
                 for _ in range(8):
                     page.wait_for_timeout(1000)
@@ -176,7 +188,7 @@ def solve_turnstile_locally(
 
                 if vps_tokens:
                     vps_turnstile_token = vps_tokens[0]
-                    send_token_to_vps(coolify_url, vps_turnstile_token)
+                    send_token_to_vps(target_vps, vps_turnstile_token)
 
             try:
                 page.close()
@@ -197,8 +209,8 @@ def solve_turnstile_locally(
 
 
 if __name__ == "__main__":
-    coolify_target = sys.argv[1] if len(sys.argv) > 1 else None
-    print("[*] Running automated Turnstile solver...")
+    coolify_target = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_VPS_URL
+    print(f"[*] Running automated Turnstile solver (target: {coolify_target})...")
     cookie, token = solve_turnstile_locally(coolify_url=coolify_target)
     print(f"[+] Local tdl_pass: {cookie[:40] if cookie else None}")
     print(f"[+] VPS Turnstile token: {token[:40] if token else None}")
