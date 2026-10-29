@@ -169,32 +169,49 @@ def solve_turnstile_locally(
             page = ctx.new_page()
 
             # Step 1: Solve for local machine
-            page.goto("https://teraboxdl.site/", wait_until="domcontentloaded", timeout=25000)
-            page.wait_for_timeout(1000)
-            inp = page.locator('input[placeholder*="Terabox"]').first
-            if inp.is_visible(timeout=5000):
+            sys.stdout.write("[*] Loading https://teraboxdl.site/...\n")
+            sys.stdout.flush()
+            page.goto("https://teraboxdl.site/", wait_until="domcontentloaded", timeout=30000)
+            
+            try:
+                inp = page.locator('input[placeholder*="Terabox"]').first
+                inp.wait_for(state="visible", timeout=15000)
                 inp.fill(DEFAULT_TERABOX_TEST_URL)
-                page.wait_for_timeout(500)
+                page.wait_for_timeout(600)
+                
                 btn = page.locator('form button[type="submit"]').first
-                if btn.is_visible(timeout=2000):
+                if btn.is_visible():
                     btn.click()
                 else:
                     page.keyboard.press("Enter")
-            # Check for Cloudflare Turnstile checkbox in frames and click if present
-            try:
-                for frame in page.frames:
-                    if any(k in frame.url for k in ["cloudflare", "challenges", "turnstile"]):
-                        cb = frame.locator('input[type="checkbox"], .ctp-checkbox-label, #challenge-stage')
-                        if cb.is_visible(timeout=1500):
-                            cb.click()
-            except Exception:
-                pass
-            page.wait_for_timeout(3000)
+                sys.stdout.write("[*] Form submitted, solving Turnstile challenge...\n")
+                sys.stdout.flush()
+            except Exception as e:
+                sys.stderr.write(f"[!] Form interaction note: {e}\n")
 
-            for c in ctx.cookies():
-                if c.get("name") == "tdl_pass" and c.get("value") and "terabox" in c.get("domain", ""):
-                    local_tdl_pass = c["value"]
+            # Check for Cloudflare Turnstile checkbox in frames and click if present
+            for _ in range(3):
+                try:
+                    for frame in page.frames:
+                        if any(k in frame.url for k in ["cloudflare", "challenges", "turnstile"]):
+                            cb = frame.locator('input[type="checkbox"], .ctp-checkbox-label, #challenge-stage')
+                            if cb.is_visible():
+                                cb.click()
+                except Exception:
+                    pass
+                page.wait_for_timeout(1000)
+
+            # Poll for tdl_pass cookie for up to 15 seconds
+            for _ in range(15):
+                for c in ctx.cookies():
+                    if c.get("name") == "tdl_pass" and c.get("value") and "terabox" in c.get("domain", ""):
+                        local_tdl_pass = c["value"]
+                        break
+                if local_tdl_pass:
+                    sys.stdout.write(f"[+] Captured fresh tdl_pass: {local_tdl_pass[:28]}...\n")
+                    sys.stdout.flush()
                     break
+                page.wait_for_timeout(1000)
 
             # Step 2: If target_vps is configured, solve for VPS
             if target_vps and "localhost" not in target_vps and "127.0.0.1" not in target_vps:
@@ -218,17 +235,20 @@ def solve_turnstile_locally(
                 page.reload(wait_until="domcontentloaded")
                 page.wait_for_timeout(1500)
 
-                inp = page.locator('input[placeholder*="Terabox"]').first
-                if inp.is_visible(timeout=5000):
+                try:
+                    inp = page.locator('input[placeholder*="Terabox"]').first
+                    inp.wait_for(state="visible", timeout=15000)
                     inp.fill(DEFAULT_TERABOX_TEST_URL)
-                    page.wait_for_timeout(500)
+                    page.wait_for_timeout(600)
                     btn = page.locator('form button[type="submit"]').first
-                    if btn.is_visible(timeout=2000):
+                    if btn.is_visible():
                         btn.click()
                     else:
                         page.keyboard.press("Enter")
+                except Exception as e:
+                    sys.stderr.write(f"[!] Step 2 input note: {e}\n")
 
-                for _ in range(8):
+                for _ in range(12):
                     page.wait_for_timeout(1000)
                     if vps_tokens:
                         break
