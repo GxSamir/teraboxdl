@@ -184,13 +184,15 @@ def trigger_auto_solve() -> Optional[str]:
         try:
             from auto_solver import solve_turnstile_locally
             cookie, vps_token = solve_turnstile_locally(coolify_url=DEFAULT_COOLIFY_SYNC_URL)
-            if cookie:
-                set_active_token(cookie, save_file=True, sync_remote=False)
-                sys.stdout.write(f"[+] Auto-solver success! Fresh tdl_pass: {cookie[:32]}...\n")
+            current_tok = get_current_token()
+            token_candidate = cookie if (cookie and not is_token_expired(cookie)) else current_tok
+            if token_candidate and not is_token_expired(token_candidate):
+                set_active_token(token_candidate, save_file=True, sync_remote=False)
+                sys.stdout.write(f"[+] Auto-solver success! Fresh tdl_pass: {token_candidate[:32]}...\n")
                 sys.stdout.flush()
-                return cookie
+                return token_candidate
             else:
-                sys.stderr.write("[-] Auto-solver could not extract cookie.\n")
+                sys.stderr.write("[-] Auto-solver could not extract valid cookie.\n")
         except ImportError:
             sys.stderr.write("[!] auto_solver.py not found or playwright missing on this environment.\n")
         except Exception as e:

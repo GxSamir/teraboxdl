@@ -12,10 +12,12 @@ import subprocess
 import urllib.request
 import urllib.parse
 import json
+import tempfile
+import shutil
 from typing import Optional, Dict, Any, Tuple
 
 DEFAULT_TERABOX_TEST_URL = "https://1024terabox.com/s/1t2m3ENR75NinLa_v6FM2pg"
-DEFAULT_VPS_URL = "https://tbf-dl.teraboxfast.com"
+DEFAULT_VPS_URL = os.getenv("COOLIFY_SYNC_URL", "https://tbf-dl.teraboxfast.com")
 
 
 def is_port_open(port: int = 9222, host: str = "127.0.0.1") -> bool:
@@ -29,19 +31,26 @@ def is_port_open(port: int = 9222, host: str = "127.0.0.1") -> bool:
 
 
 def find_chrome_executable() -> Optional[str]:
-    """Finds Google Chrome executable path on Windows or Linux."""
+    """Finds Google Chrome or Chromium executable path on Windows or Linux."""
     candidates = [
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
         os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
         os.path.expandvars(r"%PROGRAMFILES%\Google\Chrome\Application\chrome.exe"),
-        "/usr/bin/google-chrome",
+        "/usr/bin/chromium",
         "/usr/bin/chromium-browser",
-        "/usr/bin/chromium"
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
     ]
     for c in candidates:
         if os.path.exists(c):
             return c
+
+    for name in ["chromium", "chromium-browser", "google-chrome", "chrome"]:
+        p = shutil.which(name)
+        if p:
+            return p
+
     return None
 
 
@@ -94,40 +103,60 @@ def solve_turnstile_locally(
 
     if not is_port_open(cdp_port):
         chrome_exe = find_chrome_executable()
-        if not chrome_exe:
-            sys.stderr.write("[!] Google Chrome executable not found.\n")
-            return None, None
-
-        cdp_port = 9335
-        profile_dir = os.path.expandvars(r"%TEMP%\tb_solver_profile")
-        cmd = [
-            chrome_exe,
-            f"--remote-debugging-port={cdp_port}",
-            f"--user-data-dir={profile_dir}",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--window-position=-2500,-2500",
-            "--window-size=900,700",
-            "--disable-blink-features=AutomationControlled"
-        ]
-        try:
-            launched_process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            time.sleep(2)
-        except Exception as e:
-            sys.stderr.write(f"[!] Could not launch Chrome: {e}\n")
-            return None, None
+        if chrome_exe:
+            cdp_port = 9335
+            profile_dir = os.path.join(tempfile.gettempdir(), "tb_solver_profile")
+            cmd = [
+                chrome_exe,
+                f"--remote-debugging-port={cdp_port}",
+                f"--user-data-dir={profile_dir}",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--window-position=-2500,-2500",
+                "--window-size=1280,1024",
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage"
+            ]
+            try:
+                launched_process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                time.sleep(2)
+            except Exception as e:
+                sys.stderr.write(f"[!] Could not launch Chrome process: {e}\n")
+                cdp_port = None
+        else:
+            cdp_port = None
 
     local_tdl_pass = None
     vps_turnstile_token = None
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{cdp_port}")
-            ctx = browser.contexts[0]
+            if cdp_port and is_port_open(cdp_port):
+                browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{cdp_port}")
+                ctx = browser.contexts[0]
+            else:
+                # Direct Playwright Chromium launch fallback (supports Xvfb display)
+                browser = p.chromium.launch(
+                    headless=False if os.getenv("DISPLAY") else False,
+                    args=[
+                        "--disable-blink-features=AutomationControlled",
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--window-size=1280,1024"
+                    ]
+                )
+                ctx = browser.new_context(
+                    viewport={"width": 1280, "height": 1024},
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                )
+
             page = ctx.new_page()
 
             # Step 1: Solve for local machine
@@ -217,14 +246,19 @@ if __name__ == "__main__":
     if is_loop:
         print(f"[*] Starting recurring 5-minute Turnstile sync daemon (target: {coolify_target})...")
         while True:
-            print(f"\n[*] [{datetime.datetime.now().strftime('%H:%M:%S')}] Solving Turnstile...")
-            cookie, token = solve_turnstile_locally(coolify_url=coolify_target)
-            print(f"[+] Local tdl_pass: {cookie[:30] if cookie else None}")
-            print(f"[+] VPS token: {token[:30] if token else None}")
-            print("[*] Waiting 5 minutes for next cycle...")
-            time.sleep(300)
+            try:
+                print(f"\n[*] [{datetime.datetime.now().strftime('%H:%M:%S')}] Solving Turnstile...")
+                cookie, token = solve_turnstile_locally(coolify_url=coolify_target)
+                print(f"[+] Local tdl_pass: {cookie[:30] if cookie else None}")
+                print(f"[+] VPS token: {token[:30] if token else None}")
+                print("[*] Waiting 5 minutes for next cycle...")
+                time.sleep(300)
+            except Exception as loop_err:
+                sys.stderr.write(f"[!] Daemon loop cycle error: {loop_err}\n[*] Retrying in 30 seconds...\n")
+                time.sleep(30)
     else:
         print(f"[*] Running automated Turnstile solver (target: {coolify_target})...")
         cookie, token = solve_turnstile_locally(coolify_url=coolify_target)
         print(f"[+] Local tdl_pass: {cookie[:40] if cookie else None}")
         print(f"[+] VPS Turnstile token: {token[:40] if token else None}")
+

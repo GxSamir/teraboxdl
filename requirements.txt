@@ -1,5 +1,3 @@
-# TeraBoxDL requires ZERO external dependencies!
-# It runs out of the box using Python's standard library.
-#
-# Optional packages (only if you want a terminal progress bar for the CLI):
-# tqdm>=4.66.0
+# TeraBoxDL Dependencies
+# Automated Turnstile solver support for headless Linux VPS and local servers
+playwright>=1.40.0

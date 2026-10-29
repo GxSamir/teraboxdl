@@ -26,24 +26,19 @@ teraboxdl/
 
 Upstream `teraboxdl.site` uses Cloudflare Turnstile and issues a session cookie (`tdl_pass`) that expires after **2 hours** (7,200 seconds) and is cryptographically bound to the client's IP.
 
-To prevent tokens from ever degrading or reaching expiration:
+To ensure your API never expires (even when your PC is turned off):
 
-1. **5-Minute Continuous Auto-Refresh Worker**:
-   - `server.py` runs a background monitor thread that automatically triggers a fresh solve **every 5 minutes (300 seconds)**.
-   - It captures fresh Turnstile tokens and syncs them to `https://tbf-dl.teraboxfast.com/vps-verify` so your VPS session is continuously refreshed 24/7.
-   - You can also run the standalone 5-minute sync daemon:
-     ```bash
-     python auto_solver.py --loop
-     ```
+1. **Self-Sufficient VPS Docker Container (24/7 Autonomy)**:
+   - The production `Dockerfile` (Debian-slim) includes Chromium, Xvfb, and Playwright.
+   - When deployed on Coolify, the VPS runs its own background virtual display (`Xvfb :99`) and auto-refresh worker thread.
+   - It solves Turnstile directly on the VPS every 5 minutes and updates its session tokens 24/7 without needing any external computer!
 
-2. **Automated Turnstile Solver (`auto_solver.py`)**:
-   - Connects to an existing Chrome instance on port 9222 if open, or launches a background offscreen Chrome instance (`--window-position=-2500,-2500`).
-   - Completes the Turnstile challenge in ~4 seconds without user interaction.
-   - Updates `latest_cookie.txt` and memory cache.
-   - Forwards a fresh Turnstile token to Coolify VPS (`/vps-verify`), allowing the VPS to call `POST https://teraboxdl.site/api/verify` from its own IP and obtain a VPS-signed token!
+2. **Windows Background Sync Daemon (Silent & Automatic)**:
+   - For your local machine, run `start_solver_daemon.bat` to launch the 5-minute solver daemon silently in the background (no black console window).
+   - Run `install_startup_task.bat` to register a Windows Task Scheduler job that automatically starts the background sync daemon every time you turn on or log in to your computer.
 
 3. **On-Demand Auto-Recovery**:
-   - If upstream ever responds with `403 CHALLENGE_REQUIRED`, `server.py` catches it, immediately triggers `auto_solver.py`, updates the token, and automatically retries the user's request.
+   - If upstream ever responds with `403 CHALLENGE_REQUIRED`, `server.py` catches it, immediately triggers `auto_solver.py`, updates the token, and automatically retries the user's request seamlessly.
 
 ---
 
