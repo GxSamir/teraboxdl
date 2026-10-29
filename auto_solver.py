@@ -146,16 +146,21 @@ def solve_turnstile_locally(
                 ctx = browser.contexts[0]
             else:
                 # Direct Playwright Chromium launch fallback (supports Xvfb display)
-                browser = p.chromium.launch(
-                    headless=False if os.getenv("DISPLAY") else False,
-                    args=[
+                exec_path = find_chrome_executable()
+                launch_kwargs = {
+                    "headless": False if os.getenv("DISPLAY") else False,
+                    "args": [
                         "--disable-blink-features=AutomationControlled",
                         "--no-sandbox",
                         "--disable-setuid-sandbox",
                         "--disable-dev-shm-usage",
                         "--window-size=1280,1024"
                     ]
-                )
+                }
+                if exec_path and os.path.exists(exec_path):
+                    launch_kwargs["executable_path"] = exec_path
+
+                browser = p.chromium.launch(**launch_kwargs)
                 ctx = browser.new_context(
                     viewport={"width": 1280, "height": 1024},
                     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
