@@ -28,7 +28,7 @@ from typing import Tuple, Dict, Any, Optional
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 # Fallback session token
-DEFAULT_TDL_PASS: str = "1793198948.1793206148.9ffdaf791022927b.505bb3db7b0a32338d825838d216f9a4608c0282b86c2306208cb136a7a01d51"
+DEFAULT_TDL_PASS: str = "1793251075.1793258275.47c9afb6490cddc8.c802ddb2f43398e634d73683ebe9c4b2e3de3b99d55528b481b430c8708e6342"
 UPSTREAM_API: str = "https://teraboxdl.site/api/proxy"
 UPSTREAM_VERIFY: str = "https://teraboxdl.site/api/verify"
 COOKIE_FILE: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "latest_cookie.txt")
@@ -698,6 +698,8 @@ def _auto_refresh_worker() -> None:
     Automatically solves Turnstile and syncs local and remote tokens so that the session
     is perpetually fresh and never reaches expiration.
     """
+    # Allow virtual display (Xvfb) and server to finish initializing on container startup
+    time.sleep(5)
     last_refresh_time = 0.0
 
     while True:
