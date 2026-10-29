@@ -106,13 +106,14 @@ def solve_turnstile_locally(
         if chrome_exe:
             cdp_port = 9335
             profile_dir = os.path.join(tempfile.gettempdir(), "tb_solver_profile")
+            win_pos = "-2500,-2500" if os.name == "nt" else "0,0"
             cmd = [
                 chrome_exe,
                 f"--remote-debugging-port={cdp_port}",
                 f"--user-data-dir={profile_dir}",
                 "--no-first-run",
                 "--no-default-browser-check",
-                "--window-position=-2500,-2500",
+                f"--window-position={win_pos}",
                 "--window-size=1280,1024",
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
@@ -125,7 +126,10 @@ def solve_turnstile_locally(
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL
                 )
-                time.sleep(2)
+                for _ in range(12):
+                    if is_port_open(cdp_port):
+                        break
+                    time.sleep(0.5)
             except Exception as e:
                 sys.stderr.write(f"[!] Could not launch Chrome process: {e}\n")
                 cdp_port = None
@@ -171,7 +175,16 @@ def solve_turnstile_locally(
                     btn.click()
                 else:
                     page.keyboard.press("Enter")
-            page.wait_for_timeout(4000)
+            # Check for Cloudflare Turnstile checkbox in frames and click if present
+            try:
+                for frame in page.frames:
+                    if any(k in frame.url for k in ["cloudflare", "challenges", "turnstile"]):
+                        cb = frame.locator('input[type="checkbox"], .ctp-checkbox-label, #challenge-stage')
+                        if cb.is_visible(timeout=1500):
+                            cb.click()
+            except Exception:
+                pass
+            page.wait_for_timeout(3000)
 
             for c in ctx.cookies():
                 if c.get("name") == "tdl_pass" and c.get("value") and "terabox" in c.get("domain", ""):
@@ -218,6 +231,8 @@ def solve_turnstile_locally(
                 if vps_tokens:
                     vps_turnstile_token = vps_tokens[0]
                     send_token_to_vps(target_vps, vps_turnstile_token)
+                    if target_vps != "http://127.0.0.1:8000" and is_port_open(8000):
+                        send_token_to_vps("http://127.0.0.1:8000", vps_turnstile_token)
 
             try:
                 page.close()
