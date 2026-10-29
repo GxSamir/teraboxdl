@@ -222,8 +222,21 @@ def solve_turnstile_locally(
                     except Exception:
                         pass
 
+            # Explicit coordinate click on Turnstile checkbox at (513, 464)
+            sys.stdout.write("[*] Dispatching click to Turnstile checkbox at (513, 464)...\n")
+            sys.stdout.flush()
+            try:
+                page.mouse.move(513, 464)
+                time.sleep(0.1)
+                page.mouse.down()
+                time.sleep(0.08)
+                page.mouse.up()
+            except Exception as e:
+                sys.stderr.write(f"[!] Coordinate click note: {e}\n")
+
             # Poll for tdl_pass cookie
             start_t = time.time()
+            click_retried = False
             while time.time() - start_t < timeout_seconds:
                 for c in ctx.cookies():
                     if c.get("name") == "tdl_pass" and c.get("value"):
@@ -233,6 +246,19 @@ def solve_turnstile_locally(
                         break
                 if local_tdl_pass:
                     break
+
+                # If cookie not captured yet after 3.5s, retry click at slightly shifted coordinates
+                if time.time() - start_t > 3.5 and not click_retried:
+                    click_retried = True
+                    try:
+                        page.mouse.move(518, 464)
+                        time.sleep(0.05)
+                        page.mouse.down()
+                        time.sleep(0.08)
+                        page.mouse.up()
+                    except Exception:
+                        pass
+
                 time.sleep(1)
 
             # Save post-solve screenshot
@@ -263,6 +289,17 @@ def solve_turnstile_locally(
             except Exception:
                 pass
         shutil.rmtree(profile_dir, ignore_errors=True)
+
+    # Save captured cookie to latest_cookie.txt
+    if local_tdl_pass:
+        cookie_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "latest_cookie.txt")
+        try:
+            with open(cookie_file, "w", encoding="utf-8") as f:
+                f.write(local_tdl_pass.strip())
+            sys.stdout.write(f"[+] Saved fresh session token to {cookie_file}\n")
+            sys.stdout.flush()
+        except Exception:
+            pass
 
     # If running on a client machine with a remote VPS URL configured, sync token
     target_vps = coolify_url or DEFAULT_VPS_URL
