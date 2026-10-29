@@ -497,6 +497,26 @@ class TeraBoxAPIHandler(BaseHTTPRequestHandler):
             self._send_json_response(200, meta)
             return
 
+        # Solver screenshot endpoint
+        if parsed.path == "/solver-screenshot":
+            import tempfile
+            shot_path = os.path.join(tempfile.gettempdir(), "solver_view.png")
+            if os.path.exists(shot_path):
+                try:
+                    with open(shot_path, "rb") as f:
+                        data = f.read()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/png")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
+                except Exception as e:
+                    self._send_json_response(500, {"error": str(e)})
+                    return
+            self._send_json_response(404, {"error": "No solver screenshot captured yet"})
+            return
+
         # Update token live via GET
         if parsed.path == "/update-token":
             new_token = query_params.get("token", [None])[0]

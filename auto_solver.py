@@ -101,40 +101,40 @@ def solve_turnstile_locally(
     cdp_port = 9222
     launched_process = None
 
-    if not is_port_open(cdp_port):
-        chrome_exe = find_chrome_executable()
-        if chrome_exe:
-            cdp_port = 9335
-            profile_dir = os.path.join(tempfile.gettempdir(), "tb_solver_profile")
-            win_pos = "-2500,-2500" if os.name == "nt" else "0,0"
-            cmd = [
-                chrome_exe,
-                f"--remote-debugging-port={cdp_port}",
-                f"--user-data-dir={profile_dir}",
-                "--no-first-run",
-                "--no-default-browser-check",
-                f"--window-position={win_pos}",
-                "--window-size=1280,1024",
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage"
-            ]
-            try:
-                launched_process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
-                for _ in range(12):
-                    if is_port_open(cdp_port):
-                        break
-                    time.sleep(0.5)
-            except Exception as e:
-                sys.stderr.write(f"[!] Could not launch Chrome process: {e}\n")
+    if os.name == "nt":
+        if not is_port_open(cdp_port):
+            chrome_exe = find_chrome_executable()
+            if chrome_exe:
+                cdp_port = 9335
+                profile_dir = os.path.join(tempfile.gettempdir(), "tb_solver_profile")
+                cmd = [
+                    chrome_exe,
+                    f"--remote-debugging-port={cdp_port}",
+                    f"--user-data-dir={profile_dir}",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--window-position=-2500,-2500",
+                    "--window-size=1280,1024",
+                    "--disable-blink-features=AutomationControlled"
+                ]
+                try:
+                    launched_process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                    for _ in range(12):
+                        if is_port_open(cdp_port):
+                            break
+                        time.sleep(0.5)
+                except Exception as e:
+                    sys.stderr.write(f"[!] Could not launch Chrome process: {e}\n")
+                    cdp_port = None
+            else:
                 cdp_port = None
-        else:
-            cdp_port = None
+    else:
+        # On Linux / Docker, use direct Playwright process launch under Xvfb
+        cdp_port = None
 
     local_tdl_pass = None
     vps_turnstile_token = None
@@ -145,7 +145,7 @@ def solve_turnstile_locally(
                 browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{cdp_port}")
                 ctx = browser.contexts[0]
             else:
-                # Direct Playwright Chromium launch fallback (supports Xvfb display)
+                # Direct Playwright launch with system chromium and anti-detection flags
                 exec_path = find_chrome_executable()
                 launch_kwargs = {
                     "headless": False if os.getenv("DISPLAY") else False,
@@ -168,11 +168,30 @@ def solve_turnstile_locally(
 
             page = ctx.new_page()
 
+            # Listen for verify responses
+            def on_resp(res):
+                if "/api/verify" in res.url:
+                    try:
+                        sys.stdout.write(f"[*] Upstream verify response: {res.status}\n")
+                        sys.stdout.flush()
+                    except Exception:
+                        pass
+            page.on("response", on_resp)
+
             # Step 1: Solve for local machine
             sys.stdout.write("[*] Loading https://teraboxdl.site/...\n")
             sys.stdout.flush()
             page.goto("https://teraboxdl.site/", wait_until="domcontentloaded", timeout=30000)
-            
+            sys.stdout.write(f"[*] Page loaded: '{page.title()}' ({page.url})\n")
+            sys.stdout.flush()
+
+            # Save initial debug screenshot
+            shot_file = os.path.join(tempfile.gettempdir(), "solver_view.png")
+            try:
+                page.screenshot(path=shot_file)
+            except Exception:
+                pass
+
             try:
                 inp = page.locator('input[placeholder*="Terabox"]').first
                 inp.wait_for(state="visible", timeout=15000)
@@ -190,7 +209,7 @@ def solve_turnstile_locally(
                 sys.stderr.write(f"[!] Form interaction note: {e}\n")
 
             # Check for Cloudflare Turnstile checkbox in frames and click if present
-            for _ in range(3):
+            for _ in range(4):
                 try:
                     for frame in page.frames:
                         if any(k in frame.url for k in ["cloudflare", "challenges", "turnstile"]):
@@ -200,6 +219,12 @@ def solve_turnstile_locally(
                 except Exception:
                     pass
                 page.wait_for_timeout(1000)
+
+            # Save post-submit screenshot
+            try:
+                page.screenshot(path=shot_file)
+            except Exception:
+                pass
 
             # Poll for tdl_pass cookie for up to 15 seconds
             for _ in range(15):
